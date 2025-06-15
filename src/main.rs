@@ -77,6 +77,10 @@ pub struct Cli {
     #[arg(short, long, value_name = "NAME", conflicts_with = "release")]
     pub profile: Option<String>,
 
+    /// Build a bundle of the specified type
+    #[arg(long, value_name = "NAME")]
+    pub bundle_type: Option<String>,
+
     /// Build a bundle for the target triple
     #[arg(short, long, value_name = "TRIPLE")]
     pub target: Option<String>,
