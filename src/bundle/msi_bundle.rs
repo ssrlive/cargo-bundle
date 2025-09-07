@@ -30,6 +30,7 @@ const UUID_NAMESPACE: [u8; 16] = [
 ];
 
 // Info about a resource file (including the main executable) in the bundle.
+#[derive(Debug, Clone)]
 struct ResourceInfo {
     // The path to the existing file that will be bundled as a resource.
     source_path: PathBuf,
@@ -41,9 +42,13 @@ struct ResourceInfo {
     size: u64,
     // The database key for the Component that this resource is part of.
     component_key: String,
+
+    // The database key for the File table entry for this resource.
+    file_id: String,
 }
 
 // Info about a directory that needs to be created during installation.
+#[derive(Debug, Clone)]
 struct DirectoryInfo {
     // The database key for this directory.
     key: String,
@@ -51,11 +56,12 @@ struct DirectoryInfo {
     parent_key: String,
     // The name of this directory in the filesystem.
     name: String,
-    // List of files in this directory, not counting subdirectories.
+    // List of file IDs in this directory, not counting subdirectories.
     files: Vec<String>,
 }
 
 // Info about a CAB archive within the installer package.
+#[derive(Debug, Clone)]
 struct CabinetInfo {
     // The stream name for this cabinet.
     name: String,
@@ -68,7 +74,7 @@ pub fn bundle_project(settings: &Settings) -> crate::Result<Vec<PathBuf>> {
 
     let msi_name = format!("{}.msi", settings.bundle_name());
     common::print_bundling(&msi_name)?;
-    let base_dir = settings.project_out_directory().join("bundle/msi");
+    let base_dir = settings.project_out_directory().join("bundle").join("msi");
     let msi_path = base_dir.join(&msi_name);
     let mut package =
         new_empty_package(&msi_path).with_context(|| "Failed to initialize MSI package")?;
@@ -124,15 +130,16 @@ pub fn bundle_project(settings: &Settings) -> crate::Result<Vec<PathBuf>> {
             msi::Column::build("Data").binary(),
         ],
     )?;
-    let icon_name = format!("{}.ico", settings.binary_name());
+    let icon_name = to_msi_id(settings.binary_name());
+    let stream_name = format!("Icon.{icon_name}");
     {
-        let stream_name = format!("Icon.{icon_name}");
         let mut stream = package.write_stream(&stream_name)?;
         create_app_icon(&mut stream, settings)?;
     }
-    package.insert_rows(
-        msi::Insert::into("Icon").row(vec![msi::Value::Str(icon_name), msi::Value::from("Name")]),
-    )?;
+    package.insert_rows(msi::Insert::into("Icon").row(vec![
+        msi::Value::Str(icon_name),
+        msi::Value::from(stream_name),
+    ]))?;
 
     package.flush()?;
     Ok(vec![msi_path])
@@ -173,6 +180,21 @@ fn set_summary_info(package: &mut Package, package_guid: Uuid, settings: &Settin
     let creating_app = crate::version_info!();
     summary_info.set_creating_application(creating_app);
     summary_info.set_word_count(2);
+}
+
+fn to_msi_id(filename: &str) -> String {
+    filename
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+        .trim_start_matches(|c: char| !c.is_alphabetic() && c != '_')
+        .to_string()
 }
 
 // Creates and populates the `Property` database table for the package.
@@ -241,6 +263,7 @@ fn create_property_table(
 fn collect_resource_info(settings: &Settings) -> crate::Result<Vec<ResourceInfo>> {
     let mut resources = Vec::<ResourceInfo>::new();
     resources.push(ResourceInfo {
+        file_id: to_msi_id(settings.binary_name()),
         source_path: settings.binary_path().to_path_buf(),
         dest_path: PathBuf::from(settings.binary_name()),
         filename: settings.binary_name().to_string(),
@@ -255,6 +278,7 @@ fn collect_resource_info(settings: &Settings) -> crate::Result<Vec<ResourceInfo>
         let dest_path = root_rsrc_dir.join(common::resource_relpath(&source_path));
         let filename = dest_path.file_name().unwrap().to_string_lossy().to_string();
         let info = ResourceInfo {
+            file_id: to_msi_id(&filename),
             source_path,
             dest_path,
             filename,
@@ -312,7 +336,7 @@ fn collect_directory_info(
         }
         let directory = dir_map.get_mut(&dir_path).unwrap();
         debug_assert_eq!(directory.key, dir_key);
-        directory.files.push(resource.filename.clone());
+        directory.files.push(resource.file_id.clone());
         resource.component_key = dir_key.to_string();
     }
     Ok(dir_map.into_values().collect())
@@ -627,7 +651,7 @@ fn create_file_table(package: &mut Package, cabinets: &[CabinetInfo]) -> crate::
     for cabinet in cabinets.iter() {
         for resource in cabinet.resources.iter() {
             rows.push(vec![
-                msi::Value::Str(resource.filename.clone()),
+                msi::Value::Str(resource.file_id.clone()),
                 msi::Value::Str(resource.component_key.clone()),
                 msi::Value::Str(resource.filename.clone()),
                 msi::Value::Int(resource.size as i32),
